@@ -45,9 +45,22 @@ import subprocess
 import sys
 import time
 import logging
+import logging
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Optional
+
+try:
+    from g2g_fast_client import (
+        G2GConfig, scan_orders as fast_scan_orders, inspect_order as fast_inspect_order,
+        send_chat as fast_send_chat, upload_proof as fast_upload_proof,
+        confirm_delivery as fast_confirm_delivery, read_fast_config, test_connection as fast_test_connection
+    )
+    FAST_CLIENT_AVAILABLE = True
+except ImportError:
+    FAST_CLIENT_AVAILABLE = False
+    logging.warning("[INIT] g2g_fast_client.py not found, using only browser")
+
 
 try:
     from g2g_fast_client import (
@@ -511,6 +524,31 @@ def find_new_order(env: dict[str, str], state: dict[str, Any], debug_dir: Path, 
             print("[FAST] Checking for new orders via requests...")
             scan_res = fast_scan_orders(fast_cfg)
             if not scan_res.get("needs_browser") and scan_res.get("orders"):
+                for o in scan_res["orders"]:
+                    oid = o["order_id"]
+                    rec = state.get("orders", {}).get(oid, {})
+                    if rec.get("confirmed") or rec.get("completed"):
+                        continue
+
+                    print(f"[FAST] Found processable order: {oid}")
+                    insp_res = fast_inspect_order(fast_cfg, oid)
+                    if not insp_res.get("needs_browser"):
+                        return FoundOrder(
+                            order_id=oid,
+                            buyer=insp_res.get("buyer", ""),
+                            current_url=order_url(env, oid),
+                            status_sample=f"Fast-scanned: {o.get('status')}",
+                            processable=True
+                        )
+    # --- HYBRID FAST SCAN END ---
+
+    # --- HYBRID FAST SCAN START ---
+    if FAST_CLIENT_AVAILABLE:
+        fast_cfg = read_fast_config()
+        if fast_cfg.scan_enabled:
+            print("[FAST] Checking for new orders via requests...")
+            scan_res = fast_scan_orders(fast_cfg)
+            if not scan_res.get("needs_browser") and scan_res.get("orders"):
                 # Use the first found order to avoid opening a browser for scanning.
                 # In a more advanced version, we could process all of them.
                 for o in scan_res["orders"]:
@@ -534,7 +572,7 @@ def find_new_order(env: dict[str, str], state: dict[str, Any], debug_dir: Path, 
                         )
     # --- HYBRID FAST SCAN END ---
 
-    ensure_proxy_wrapper(env)
+    # ensure_proxy_wrapper(env)
     driver = make_driver(env, debug_dir)
     try:
         if explicit_order_id:
@@ -681,7 +719,7 @@ def _click_best_text(driver: webdriver.Chrome, needles: list[str], timeout: int 
 
 
 def verify_delivery_stage(env: dict[str, str], order_id: str, debug_dir: Path) -> dict[str, Any]:
-    ensure_proxy_wrapper(env)
+    # ensure_proxy_wrapper(env)
     driver = make_driver(env, debug_dir)
     try:
         driver.get(order_url(env, order_id))
@@ -731,7 +769,7 @@ def start_delivery_if_needed(env: dict[str, str], order_id: str, debug_dir: Path
     if pre.get("login_required"):
         return {"ok": False, "login_required": True, "verify": pre, "error": pre.get("error")}
 
-    ensure_proxy_wrapper(env)
+    # ensure_proxy_wrapper(env)
     driver = make_driver(env, debug_dir)
     try:
         driver.get(order_url(env, order_id))
@@ -1476,7 +1514,7 @@ def direct_upload_one_proof(env: dict[str, str], order_id: str, file_path: str, 
     the correct URL but saw an empty body.
     """
     debug_dir = safe_mkdir(debug_root / "g2g_upload_direct_v10")
-    ensure_proxy_wrapper(env)
+    # ensure_proxy_wrapper(env)
     driver = make_driver(env, debug_dir)
     try:
         target = order_url(env, order_id)
@@ -1528,7 +1566,7 @@ def direct_upload_proofs_sequence(env: dict[str, str], order_id: str, file_paths
       - click 'Отправить' once at the end in the selected-file dialog.
     """
     debug_dir = safe_mkdir(debug_root / "g2g_upload_direct_v16_sequence")
-    ensure_proxy_wrapper(env)
+    # ensure_proxy_wrapper(env)
     driver = make_driver(env, debug_dir)
 
     attached_files = []
@@ -1631,7 +1669,7 @@ def direct_check_uploaded_proof_count(env: dict[str, str], order_id: str, qty: i
     For this product flow, starting limit is 150, so uploaded ~= 150 - remaining.
     """
     debug_dir = safe_mkdir(debug_root / "g2g_upload_direct_v12_check")
-    ensure_proxy_wrapper(env)
+    # ensure_proxy_wrapper(env)
     driver = make_driver(env, debug_dir)
     try:
         target = order_url(env, order_id)
@@ -1873,7 +1911,7 @@ def _click_chat_conversation(driver: webdriver.Chrome, order_id: str, buyer: str
 
 def direct_send_chat_one(env: dict[str, str], order_id: str, login: str, password: str, buyer: str, debug_root: Path, idx: int) -> dict[str, Any]:
     debug_dir = safe_mkdir(debug_root / "g2g_chat_direct_v15")
-    ensure_proxy_wrapper(env)
+    # ensure_proxy_wrapper(env)
     driver = make_driver(env, debug_dir)
     message = build_delivery_message(order_id, login, password)
 
@@ -2366,7 +2404,7 @@ def _send_chat_text_message(driver: webdriver.Chrome, message: str, debug_dir: P
 
 def direct_send_chat_bundle_with_proofs(env: dict[str, str], order_id: str, buyer: str, proof_paths: list[str], accounts: list[dict[str, str]], debug_root: Path) -> dict[str, Any]:
     debug_dir = safe_mkdir(debug_root / "g2g_chat_bundle_v24")
-    ensure_proxy_wrapper(env)
+    # ensure_proxy_wrapper(env)
     driver = make_driver(env, debug_dir)
     try:
         opened = _open_chat_for_order(driver, order_id, buyer, debug_dir)
@@ -2482,6 +2520,10 @@ def process_order(env: dict[str, str], state: dict[str, Any], state_path: Path, 
     buyer = args.buyer or fo.buyer or ""
 
     debug_dir = safe_mkdir(Path(env.get("PROOFS_DIR", "proofs_g2g")) / order_id / "auto_deliver_multi_debug")
+
+    # --- HYBRID INIT START ---
+    fast_cfg = read_fast_config() if FAST_CLIENT_AVAILABLE else None
+    # --- HYBRID INIT END ---
 
     # --- HYBRID INIT START ---
     fast_cfg = read_fast_config() if FAST_CLIENT_AVAILABLE else None
@@ -2765,7 +2807,24 @@ def process_order(env: dict[str, str], state: dict[str, Any], state_path: Path, 
 
         if not chat_json.get("ok"):
             print("Sending credentials via Selenium...")
+
+        # --- HYBRID FAST CHAT START ---
+        chat_json = {"ok": False}
+        if fast_cfg and fast_cfg.chat_endpoint:
+            print("[FAST] Sending credentials via requests...")
+            msg = f"Order: {order_id}\n"
+            for i, acc in enumerate(accounts[:qty], 1):
+                msg += f"ACC {i}: {acc['login']} / {acc['password']}\n"
+            res = fast_send_chat(fast_cfg, order_id, msg)
+            if not res.get("needs_browser") and res.get("success"):
+                chat_json = {"ok": True, "method": "fast_requests"}
+                print("[FAST] Chat message sent successfully.")
+        # --- HYBRID FAST CHAT END ---
+
+        if not chat_json.get("ok"):
+            print("Sending credentials via Selenium...")
             chat_json = direct_send_chat_bundle_with_proofs(env, order_id, buyer, [], accounts[:qty], debug_dir)
+
 
         result["steps"]["chat_bundle"] = {"json": chat_json}
         print(json.dumps(chat_json, ensure_ascii=False, indent=2))
@@ -2816,10 +2875,24 @@ def process_order(env: dict[str, str], state: dict[str, Any], state_path: Path, 
 
         if not conf_json.get("ok"):
             print("Confirming delivery via Selenium...")
+
+        # --- HYBRID FAST CONFIRM START ---
+        conf_json = {"ok": False}
+        if fast_cfg and fast_cfg.confirm_endpoint:
+            print(f"[FAST] Confirming delivery via requests (qty={qty})...")
+            res = fast_confirm_delivery(fast_cfg, order_id, qty)
+            if not res.get("needs_browser") and res.get("success"):
+                conf_json = {"ok": True, "method": "fast_requests"}
+                print("[FAST] Delivery confirmed successfully.")
+        # --- HYBRID FAST CONFIRM END ---
+
+        if not conf_json.get("ok"):
+            print("Confirming delivery via Selenium...")
             conf = run_py(["g2g_confirm_delivery_strict_v4.py", order_id, "--qty", str(qty), "--do-it"], env=env, timeout=900)
             result["steps"]["confirm_delivery"] = conf
             print(conf["stdout"])
             conf_json = conf["json"]
+
         if conf["returncode"] != 0 or not conf_json or not conf_json.get("ok"):
             result["error"] = "confirm delivery failed"
             rec["error"] = result["error"]
