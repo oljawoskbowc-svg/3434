@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+g2g_playwright_profile/
+data_g2g/
+proofs_g2g/
+*.log
+*.tmp
+.env
